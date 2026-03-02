@@ -1,0 +1,66 @@
+[%
+hostgroup = nagios.hostgroupname;
+matpath = config.hostgroups.$hostgroup.matpath.replace(",", " > ");
+%]
+[% nagios.notificationtype %]: [%
+
+IF nagios.hostaddress == 'Opsview-Business-Service' -%]
+Business Service [% nagios.servicedesc %] is [% nagios.notificationtype %]
+[% ELSIF nagios.hostaddress == 'Opsview-Component' -%]
+Business Component [% nagios.servicedesc %] is [% nagios.notificationtype %]
+[% ELSIF nagios.servicedesc;
+  nagios.servicedesc %] is [% nagios.servicestate %] on host [% nagios.hostname %][%
+ELSE;
+  nagios.hostname %] is [% nagios.hoststate %][%
+END;
+
+%]
+
+[%- IF nagios.hostaddress == 'Opsview-Business-Service' -%]
+Business Service: [% nagios.servicedesc %]
+[% ELSIF nagios.hostaddress == 'Opsview-Component' -%]
+Business Component: [% nagios.servicedesc %]
+[% ELSIF nagios.servicedesc; %]Service: [% nagios.servicedesc %][% END -%]
+[%- IF nagios.hostaddress == 'Opsview-Business-Service' || nagios.hostaddress == 'Opsview-Component' -%]
+State: [% IF nagios.servicedesc; nagios.servicestate; ELSE; nagios.hoststate; END; %][% ELSE %]
+Host: [% nagios.hostname %]
+Alias: [% nagios.hostalias %]
+Address: [% nagios.hostaddress %]
+Host Group Hierarchy: [% matpath %]
+State: [% IF nagios.servicedesc; nagios.servicestate; ELSE; nagios.hoststate; END; %][% END %]
+[%-
+
+IF nagios.servicedesc && nagios.serviceackcomment; %]
+Comment: [% nagios.serviceackcomment %] ([% nagios.serviceackauthor %])[%
+ELSIF nagios.hostackcomment; %]
+Comment: [% nagios.hostackcomment %] ([% nagios.hostackauthor %])[%
+END;
+
+%]
+Date & Time: [% nagios.longdatetime %]
+[%- IF nagios.keywords %]
+Keywords: [% nagios.keywords %]
+[%- END %]
+
+[%- IF nagios.servicenotes %]
+Notes:
+
+[% nagios.servicenotes %]
+[%- END %]
+
+Additional Information:
+
+[%
+IF nagios.servicedesc;
+  nagios.serviceoutput | ov_decode_newlines; "\n";
+  nagios.longserviceoutput | ov_decode_newlines;
+ELSE;
+  nagios.hostoutput | ov_decode_newlines; "\n";
+  nagios.longhostoutput | ov_decode_newlines;
+END;
+%]
+
+[%- IF ( nagios.hostaddress == 'Opsview-Business-Service' || nagios.hostaddress == 'Opsview-Component' ) && nagios.servicenotes != '' %]
+Comments:
+[% nagios.servicenotes %]
+[% END %]

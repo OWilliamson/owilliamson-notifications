@@ -1,0 +1,190 @@
+#!/usr/bin/env perl
+# LICENSE:
+#   Copyright (C) 2003-2021 Opsview Limited. All rights reserved
+#
+#   This file is part of Opsview
+#
+
+# SYNTAX:
+my $usage = qq{
+   notify_by_assure1
+   Copyright (C) 2003-2021 Opsview Limited. All rights reserved
+
+Usage: notify_by_assure1 [-h] [-n] [-d] [-m] [-u] [-c] [-t]
+
+Where:
+  -h - this help text
+  -n - do not send acknowledgements
+  -d - debug mode, prints errors to stderr and log file
+  -u - url to send the notification to, will override the Opsview notification variables if specified
+  -t - test mode, prints payload
+};
+
+use strict;
+use warnings;
+use lib qw( /opt/opsview/monitoringscripts/lib /opt/opsview/perl/lib/perl5 /opt/opsview/corelibs/lib );
+use Data::Dump qw( pp );
+use Getopt::Long;
+use HTTP::Request;
+use JSON;
+use HTTP::Request::Common qw(POST);
+use Opsview::Config::Notifications;
+use Opsview::Schema;
+
+
+# Vars for message
+my $url      = "";
+my $message  = "";
+
+my ( $help_mode, $debug_mode, $no_ack, $test_mode );
+$debug_mode = $no_ack = $help_mode = 0;
+
+# Get the arguments, print usage and exit 1 if unknown argument or argument with no value
+unless (
+    GetOptions(
+        'h'   => \$help_mode,
+        'd'   => \$debug_mode,
+        'n'   => \$no_ack,
+        'u=s' => \$url,
+    )
+  )
+{
+    print STDERR $usage;
+    exit 1;
+}
+
+$ENV{DBIC_UTF8COLUMNS_OK}=1;
+
+require Opsview::Config;
+require DBI;
+
+my $dbh = DBI->connect(
+    Opsview::Config->dbi
+      . ":database="
+      . Opsview::Config->db
+      . ";host="
+      . Opsview::Config->dbhost
+      . ';port='
+      . Opsview::Config->dbport,
+    Opsview::Config->dbuser,
+    Opsview::Config->dbpasswd,
+    Opsview::Config->dbic_options
+);
+
+# Search for Host Group
+my $sth = $dbh->prepare("SELECT hostgroup FROM hosts WHERE name = '$ENV{NAGIOS_HOSTNAME}'")
+    or die "prepare statement failed: $dbh->errstr()";
+$sth->execute() or die "execution failed: $dbh->errstr()";
+my $hg = $sth->fetchrow_hashref();
+
+# Search for MPATH
+$sth = $dbh->prepare("SELECT matpath FROM hostgroups WHERE id = $hg->{hostgroup}")
+    or die "prepare statement failed: $dbh->errstr()";
+$sth->execute() or die "execution failed: $dbh->errstr()";
+my $mpath = substr($sth->fetchrow_hashref()->{matpath}, 0, -1);
+$mpath =~ s/,/ \> /;
+
+# Set NAGIOS_MPATH as environment variable
+$ENV{'NAGIOS_MATPATH'} = $mpath;
+
+
+if ($help_mode) {
+
+    # Help
+    print $usage;
+}
+
+else {
+    prepare_message();
+    send_assure1_message();
+}
+
+sub prepare_message {
+
+    # BSM Notification
+    if ( $ENV{OPSVIEW_NAME} ) {
+        $message = $message || $ENV{OPSVIEW_OUTPUT};
+    }
+    elsif ( $ENV{NAGIOS_HOSTNAME} ) {
+
+        # Acknowledgement, ignore and exit 0
+        if ( $no_ack && $ENV{NAGIOS_NOTIFICATIONTYPE} eq 'ACKNOWLEDGEMENT' ) {
+            exit 0;
+        }
+
+        # Service Check
+        if ( $ENV{NAGIOS_SERVICEDESC} ) {
+            $message = $message
+              || "Date: $ENV{NAGIOS_SHORTDATETIME} | Host: $ENV{NAGIOS_HOSTNAME} | Hostgroup: $ENV{NAGIOS_MATPATH} | Service: $ENV{NAGIOS_SERVICEDESC} | State: $ENV{NAGIOS_SERVICESTATE} | Output: $ENV{NAGIOS_SERVICEOUTPUT}";
+        }
+
+        # Host
+        else {
+            $message = $message
+              || "Date: $ENV{NAGIOS_SHORTDATETIME} | Host: $ENV{NAGIOS_HOSTNAME} | Hostgroup: $ENV{NAGIOS_MATPATH} | State: $ENV{NAGIOS_HOSTSTATE} | Output: $ENV{NAGIOS_HOSTOUTPUT}";
+        }
+    }
+    else {
+        print STDERR "No Opsview or Nagios environment variables set\n";
+        exit 1;
+    }
+}
+
+sub send_assure1_message {
+    require LWP::UserAgent;
+
+    my $encode_string = JSON->new();
+
+    $encode_string->allow_nonref();
+
+    my $payload = {
+        "text" => $message,
+    };
+
+    if ( $debug_mode ) {
+        print pp($message);
+    }
+
+    my $req = POST( $url, [ "payload" => encode_json($payload) ] );
+
+    my $ua = LWP::UserAgent->new;
+    $ua->timeout(5);
+
+    my $res = $ua->request($req);
+
+    my $err_line = $res->is_success ? '' : $res->status_line;
+    my $err_message = '';
+    if ($err_line) {
+        my $json = decode_json( $res->content );
+        $err_message = $json->{error};
+    }
+
+    if ($debug_mode) {
+        $err_line
+          ? print "Message not sent: $err_line: $err_message\n"
+          : print "Message sent\n";
+    }
+
+    if (
+        (
+               $debug_mode
+            or $err_line
+        )
+        and open my $fh,
+        '>>',
+        '/opt/opsview/monitoringscripts/var/log/notify_by_assure1.log'
+      )
+    {
+        my @t = localtime;
+        my $time = sprintf '%d-%02d-%02d %02d:%02d:%02d', 1900 + $t[5],
+          1 + $t[4], $t[3], $t[2], $t[1], $t[0];
+        if ( not $err_line ) {
+            print $fh "$time ${\( $res->code )} $message\n";
+        }
+        else {
+            print $fh
+              "$time ${\( $res->code )} \n  $err_line: $err_message\n";
+        }
+    }
+    exit !$res->is_success;
+}

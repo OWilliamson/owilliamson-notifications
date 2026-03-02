@@ -1,0 +1,241 @@
+#!/opt/opsview/python3/bin/python3
+#
+# LICENSE:
+#   Copyright (C) 2003-2024 Opsview Limited. All rights reserved
+#
+#   This file is part of Opsview
+#
+
+import os
+import sys
+import argparse
+import json
+from datetime import datetime
+from urllib.request import Request, urlopen
+
+LOG_FILE = "/opt/opsview/monitoringscripts/var/log/notify_by_remedy.log"
+
+
+    # BSM Notification
+    if "OPSVIEW_NAME" in os.environ:
+        if not message:
+            message = os.environ.get("OPSVIEW_OUTPUT", "No output")
+        # OPSVIEW_STATETEXT - current state of the BSM object.
+        # One of OPERATIONAL, IMPACTED, FAILED, OFFLINE, DOWNTIME
+        message = f"{message}"
+
+    elif "NAGIOS_HOSTNAME" in os.environ:
+        # Acknowledgement, ignore and exit 0
+        if not acks and os.environ.get("NAGIOS_NOTIFICATIONTYPE", "") == "ACKNOWLEDGEMENT":
+            return None, True
+
+        # Service Check
+        # NOTE: In Opsview, NAGIOS_SERVICEDESC will be set with empty string - this means it is
+        # not a service check, but a host check
+        if os.environ.get("NAGIOS_SERVICEDESC"):
+            service_state = os.environ.get("NAGIOS_SERVICESTATE", "UNKNOWN")
+            if not message:
+                notification_type = os.environ.get("NAGIOS_NOTIFICATIONTYPE", "UNKNOWN")
+                service_desc = os.environ.get("NAGIOS_SERVICEDESC", "UNKNOWN")
+                hostname = os.environ.get("NAGIOS_HOSTNAME", "UNKNOWN")
+                message = f"{notification_type}: {service_desc} on {hostname} is {service_state}"
+            message = f'{message} {os.environ.get("NAGIOS_SERVICEOUTPUT", "UNKNOWN")}'
+
+        # Host
+        else:
+            host_state = os.environ.get("NAGIOS_HOSTSTATE", "UNKNOWN")
+            if not message:
+                notification_type = os.environ.get("NAGIOS_NOTIFICATIONTYPE", "UNKNOWN")
+                hostname = os.environ.get("NAGIOS_HOSTNAME", "UNKNOWN")
+                message = f"{notification_type}: {hostname} is {host_state}"
+            message = f'{message} {os.environ.get("NAGIOS_HOSTOUTPUT", "UNKNOWN")}'
+    else:
+        print(
+            ("No Opsview or Nagios environment variables set"),
+            file=sys.stderr,
+        )
+        return None, False
+
+    return message, True
+
+def remedy_login(debug=True):
+
+    headers = {
+        "Content-Type": "application/json",
+    }
+
+    req = Request(
+        f"{args.url}/api/jwt/login",
+        auth=(F"{args.username}{args.realm}", args.password),
+        headers=headers,
+        method="POST",
+    )
+
+    conn = urlopen(req, timeout=5)
+
+    if conn.status != 200:
+        err_line = conn.reason
+        err_message = json.loads(conn.read())
+    else:
+        token = req
+
+    if debug:
+        if conn.status != 200:
+            print(f"Message not sent: {err_line} {err_message}")
+        else:
+            printf("Token: {token}")
+    if debug or conn.status != 200:
+        with open(LOG_FILE, "a") as fd:
+            time = datetime.now().strftime("%y-%m-%d %H:%M:%S")
+            fd.write(f"{time} ({conn.status}) {message}\n")
+            if conn.status != 200:
+                fd.write(f"{err_line}: {err_message}\n")
+
+    return conn.status == 200
+
+def remedy_logout(debug=True):
+
+    headers = {
+        "Content-Type": "application/json",
+    }
+
+    req = Request(
+        f"{args.url}/api/jwt/logout",
+        data=json.dumps(payload).encode("UTF-8"),
+        headers=headers,
+        method="POST",
+    )
+
+    conn = urlopen(req, timeout=5)
+
+    if conn.status != 200:
+        err_line = conn.reason
+        err_message = json.loads(conn.read())
+
+    if debug:
+        if conn.status != 200:
+            print(f"Message not sent: {err_line} {err_message}")
+        else:
+            print("Remedy message sent")
+    if debug or conn.status != 200:
+        with open(LOG_FILE, "a") as fd:
+            time = datetime.now().strftime("%y-%m-%d %H:%M:%S")
+            fd.write(f"{time} ({conn.status}) {message}\n")
+            if conn.status != 200:
+                fd.write(f"{err_line}: {err_message}\n")
+
+    return conn.status == 200
+
+
+def send_remedy_message(url, message, debug=False):
+
+    payload = {
+        "values": {
+            "Action": "CREATE_INC",
+            "Summary": "This is a test summary",
+            "Description": "This is the detailed description of the ticket",
+            "Priority": "Low",
+            "ReportedSource": "Direct Input",
+            "ServiceType": "Infrastructure Event",
+#            "OperationalCatTier1":"Test Cat Tier 1",
+#            "OperationalCatTier2":"Test Cat Tier 2",
+#            "OperationalCatTier3":"Test Cat Tier 3",
+#            "ProductCatTier1":"Test Cat Tier 1",
+#            "ProductCatTier2":"Test Cat Tier 2",
+#            "ProductCatTier3":"Test Cat Tier 3",
+#            "AssignedGroup":"Test Support Group Name",
+#            "Assignee":"Test Supporter Login ID",
+            "AffectedCI":"Test Server Name",
+#            "ReportedDate":"2023-12-20T15:05:29.000+0000"
+            }
+    }
+
+    headers = {
+        "Content-Type": "application/json",
+    }
+
+    req = Request(
+        url,
+        data=json.dumps(payload).encode("UTF-8"),
+        headers=headers,
+        method="POST",
+    )
+
+    conn = urlopen(req, timeout=5)
+
+    if conn.status != 200:
+        err_line = conn.reason
+        err_message = json.loads(conn.read())
+
+    if debug:
+        if conn.status != 200:
+            print(f"Message not sent: {err_line} {err_message}")
+        else:
+            print("Remedy message sent")
+    if debug or conn.status != 200:
+        with open(LOG_FILE, "a") as fd:
+            time = datetime.now().strftime("%y-%m-%d %H:%M:%S")
+            fd.write(f"{time} ({conn.status}) {message}\n")
+            if conn.status != 200:
+                fd.write(f"{err_line}: {err_message}\n")
+
+    return conn.status == 200
+
+
+def get_args():
+
+    parser = argparse.ArgumentParser(description=("notify_by_remedy\n"
+                                                  "Copyright (C) 2003-2024 Opsview Limited. All rights reserved"))
+    parser.add_argument(
+        "-d",
+        dest="debug",
+        action="store_true",
+        help="debug mode, prints errors to stderr and log file",
+    )
+    parser.add_argument(
+        "-n",
+        dest="acks",
+        action="store_false",
+        help="do not send acknowledgements",
+    )
+    parser.add_argument(
+        "-m",
+        dest="msg",
+        help=("message to send, will override the Opsview notification data if specified"),
+    )
+    parser.add_argument(
+        "-u",
+        dest="url",
+        help=("url to send the notification to"),
+    )
+
+    return parser.parse_args()
+
+
+def main():
+
+    args = get_args()
+
+    if args.url is None:
+        print("No Remedy URL Defined")
+        return 2
+
+    if not remedy_login():
+        print("Remedy Authentication Failed")
+        sys.exit(2)
+
+    global headers
+    headers = {"Content-Type": "application/json", Authorization: f"AR-JWT {token}"}
+
+#    msg, success = prepare_message(args.msg, args.acks)
+#    if msg:
+#        success = send_remedy_message(args.url, msg, args.debug)
+
+    return 0 if (success is True) else 1
+
+#    if not remedy_logout():
+#        print("Logout Failed")
+#        sys.exit(2)
+
+if __name__ == "__main__":  # pragma: no cover
+    sys.exit(main())  # pragma: no cover
