@@ -1,21 +1,22 @@
 #!/usr/bin/python3
+"""SNMP trap sender (v1/v2c/v3) with OP5 notification mode (NAGIOS-NOTIFY-MIB)."""
 # pyright: reportMissingImports=false, reportUndefinedVariable=false
-# pylint: disable=wildcard-import,undefined-variable
+# pylint: disable=wildcard-import,undefined-variable,import-error,duplicate-code,protected-access
 
 import re
 import argparse
 import asyncio
 import logging
-from pysnmp.hlapi.v3arch.asyncio import *  # noqa: F403,F401
-from pysnmp.proto.rfc1902 import (
+from pysnmp.hlapi.v3arch.asyncio import *  # noqa: F403,F401  # pylint: disable=import-error
+from pysnmp.proto.rfc1902 import (  # pylint: disable=import-error
     Integer,
     IpAddress,
     OctetString,
     ObjectIdentifier,
     TimeTicks,
 )
-from pysnmp import debug
-from pysnmp.smi import builder, view, compiler
+from pysnmp import debug  # pylint: disable=import-error
+from pysnmp.smi import builder, view, compiler  # pylint: disable=import-error
 
 
 # Initialize MIB components globally
@@ -31,6 +32,7 @@ except Exception:  # pylint: disable=broad-except
 
 # Helper function to check if OID is numerical
 def is_numerical_oid(oid_str):
+    """Return True if oid_str is a dotted-decimal OID (e.g. 1.3.6.1.4.1)."""
     return re.match(r'^[0-9.]+$', oid_str) is not None
 
 def setup_logging(debug_flag=False):
@@ -69,18 +71,18 @@ def validate_resolved_oid(oid_identity, original_str):
         # First check if original input is numerical
         if is_numerical_oid(original_str):
             return
-        
+
         # Attempt to get string representation
         try:
             oid_str = str(oid_identity)
         except Exception:  # pylint: disable=broad-except
             oid_str = None
-        
+
         # Try resolution if needed
         if not oid_str or not is_numerical_oid(oid_str):
             oid_identity.resolve_with_mib(mib_view)
             oid_str = str(oid_identity)
-            
+
         if not is_numerical_oid(oid_str):
             raise ValueError(f"OID {original_str} resolves to non-numerical {oid_str}")
 
@@ -96,7 +98,7 @@ def resolve_oid(oid_str):
             obj_identity = ObjectIdentity(mib_name, symbol)
         else:
             obj_identity = ObjectIdentity(oid_str)
-        
+
         validate_resolved_oid(obj_identity, oid_str)
         return obj_identity
     except Exception as e:  # pylint: disable=broad-except
@@ -139,42 +141,52 @@ OP5_OID_SUFFIXES = {
 # Map notification type names to (oid_suffix_key, val_key) for each varbind
 OP5_VARBIND_SPEC = {
     "nHostEvent": [
-        ("nHostname", "HOSTNAME"), ("nHostStateID", "HOSTSTATEID"), ("nHostStateType", "HOSTSTATETYPE"),
-        ("nHostAttempt", "HOSTATTEMPT"), ("nHostDurationSec", "HOSTDURATIONSEC"), ("nHostGroupName", "HOSTGROUPNAME"),
-        ("nHostLastCheck", "LASTHOSTCHECK"), ("nHostLastChange", "LASTHOSTSTATECHANGE"), ("nHostOutput", "HOSTOUTPUT"),
+        ("nHostname", "HOSTNAME"), ("nHostStateID", "HOSTSTATEID"),
+        ("nHostStateType", "HOSTSTATETYPE"), ("nHostAttempt", "HOSTATTEMPT"),
+        ("nHostDurationSec", "HOSTDURATIONSEC"),
+        ("nHostGroupName", "HOSTGROUPNAME"), ("nHostLastCheck", "LASTHOSTCHECK"),
+        ("nHostLastChange", "LASTHOSTSTATECHANGE"), ("nHostOutput", "HOSTOUTPUT"),
     ],
     "nHostNotify": [
         ("nHostNotifyType", "NOTIFICATIONTYPE"), ("nHostNotifyNum", "NOTIFICATIONNUMBER"),
         ("nHostAckAuthor", "HOSTACKAUTHOR"), ("nHostAckComment", "HOSTACKCOMMENT"),
-        ("nHostname", "HOSTNAME"), ("nHostStateID", "HOSTSTATEID"), ("nHostStateType", "HOSTSTATETYPE"),
-        ("nHostAttempt", "HOSTATTEMPT"), ("nHostDurationSec", "HOSTDURATIONSEC"), ("nHostGroupName", "HOSTGROUPNAME"),
-        ("nHostLastCheck", "LASTHOSTCHECK"), ("nHostLastChange", "LASTHOSTSTATECHANGE"), ("nHostOutput", "HOSTOUTPUT"),
+        ("nHostname", "HOSTNAME"), ("nHostStateID", "HOSTSTATEID"),
+        ("nHostStateType", "HOSTSTATETYPE"), ("nHostAttempt", "HOSTATTEMPT"),
+        ("nHostDurationSec", "HOSTDURATIONSEC"),
+        ("nHostGroupName", "HOSTGROUPNAME"), ("nHostLastCheck", "LASTHOSTCHECK"),
+        ("nHostLastChange", "LASTHOSTSTATECHANGE"), ("nHostOutput", "HOSTOUTPUT"),
     ],
     "nSvcEvent": [
-        ("nSvcHostname", "HOSTNAME"), ("nSvcHostStateID", "HOSTSTATEID"), ("nSvcDesc", "SERVICEDESCRIPTION"),
-        ("nSvcStateID", "SERVICESTATEID"), ("nSvcAttempt", "SERVICEATTEMPT"),
-        ("nSvcDurationSec", "SERVICEDURATIONSEC"), ("nSvcGroupName", "SERVICEGROUPNAME"),
-        ("nSvcLastCheck", "LASTSERVICECHECK"), ("nSvcLastChange", "LASTSERVICESTATECHANGE"), ("nSvcOutput", "SERVICEOUTPUT"),
+        ("nSvcHostname", "HOSTNAME"), ("nSvcHostStateID", "HOSTSTATEID"),
+        ("nSvcDesc", "SERVICEDESCRIPTION"), ("nSvcStateID", "SERVICESTATEID"),
+        ("nSvcAttempt", "SERVICEATTEMPT"), ("nSvcDurationSec", "SERVICEDURATIONSEC"),
+        ("nSvcGroupName", "SERVICEGROUPNAME"), ("nSvcLastCheck", "LASTSERVICECHECK"),
+        ("nSvcLastChange", "LASTSERVICESTATECHANGE"), ("nSvcOutput", "SERVICEOUTPUT"),
     ],
     "nSvcNotify": [
         ("nSvcNotifyType", "NOTIFICATIONTYPE"), ("nSvcNotifyNum", "NOTIFICATIONNUMBER"),
         ("nSvcAckAuthor", "SERVICEACKAUTHOR"), ("nSvcAckComment", "SERVICEACKCOMMENT"),
-        ("nSvcHostname", "HOSTNAME"), ("nSvcHostStateID", "HOSTSTATEID"), ("nSvcDesc", "SERVICEDESCRIPTION"),
-        ("nSvcStateID", "SERVICESTATEID"), ("nSvcAttempt", "SERVICEATTEMPT"),
-        ("nSvcDurationSec", "SERVICEDURATIONSEC"), ("nSvcGroupName", "SERVICEGROUPNAME"),
-        ("nSvcLastCheck", "LASTSERVICECHECK"), ("nSvcLastChange", "LASTSERVICESTATECHANGE"), ("nSvcOutput", "SERVICEOUTPUT"),
+        ("nSvcHostname", "HOSTNAME"), ("nSvcHostStateID", "HOSTSTATEID"),
+        ("nSvcDesc", "SERVICEDESCRIPTION"), ("nSvcStateID", "SERVICESTATEID"),
+        ("nSvcAttempt", "SERVICEATTEMPT"), ("nSvcDurationSec", "SERVICEDURATIONSEC"),
+        ("nSvcGroupName", "SERVICEGROUPNAME"), ("nSvcLastCheck", "LASTSERVICECHECK"),
+        ("nSvcLastChange", "LASTSERVICESTATECHANGE"), ("nSvcOutput", "SERVICEOUTPUT"),
     ],
 }
 
 
 def _op5_required_keys(notification_type):
     """Return required variable keys for the given notification type."""
-    required = {"nHostEvent": ["HOSTNAME"], "nHostNotify": ["NOTIFICATIONTYPE", "HOSTNAME"],
-                "nSvcEvent": ["HOSTNAME", "SERVICEDESCRIPTION"], "nSvcNotify": ["NOTIFICATIONTYPE", "HOSTNAME", "SERVICEDESCRIPTION"]}
+    required = {
+        "nHostEvent": ["HOSTNAME"],
+        "nHostNotify": ["NOTIFICATIONTYPE", "HOSTNAME"],
+        "nSvcEvent": ["HOSTNAME", "SERVICEDESCRIPTION"],
+        "nSvcNotify": ["NOTIFICATIONTYPE", "HOSTNAME", "SERVICEDESCRIPTION"],
+    }
     return required.get(notification_type, [])
 
 
-def _op5_set_defaults(notification_type, val):
+def _op5_set_defaults(notification_type, val):  # pylint: disable=unused-argument
     """Set default values for optional OP5 variables (match Perl script)."""
     defaults = [
         ("HOSTSTATEID", 0), ("HOSTSTATETYPE", 0), ("HOSTATTEMPT", 0), ("HOSTDURATIONSEC", 0),
@@ -183,15 +195,19 @@ def _op5_set_defaults(notification_type, val):
         ("HOSTACKAUTHOR", ""), ("HOSTACKCOMMENT", ""), ("SERVICESTATEID", 0),
         ("SERVICEATTEMPT", 0), ("SERVICEDURATIONSEC", 0), ("SERVICEGROUPNAME", ""),
         ("LASTSERVICECHECK", 0), ("LASTSERVICESTATECHANGE", 0),
-        ("SERVICEOUTPUT", "<No output from service>"), ("SERVICEACKAUTHOR", ""), ("SERVICEACKCOMMENT", ""),
+        ("SERVICEOUTPUT", "<No output from service>"),
+        ("SERVICEACKAUTHOR", ""), ("SERVICEACKCOMMENT", ""),
     ]
     for k, v in defaults:
         if val.get(k) is None or val.get(k) == "":
             val[k] = v
     # Coerce numeric fields to int where needed
-    for key in ("HOSTSTATEID", "HOSTSTATETYPE", "HOSTATTEMPT", "HOSTDURATIONSEC", "LASTHOSTCHECK",
-                "LASTHOSTSTATECHANGE", "NOTIFICATIONTYPE", "NOTIFICATIONNUMBER", "SERVICESTATEID",
-                "SERVICEATTEMPT", "SERVICEDURATIONSEC", "LASTSERVICECHECK", "LASTSERVICESTATECHANGE"):
+    num_keys = (
+        "HOSTSTATEID", "HOSTSTATETYPE", "HOSTATTEMPT", "HOSTDURATIONSEC",
+        "LASTHOSTCHECK", "LASTHOSTSTATECHANGE", "NOTIFICATIONTYPE", "NOTIFICATIONNUMBER",
+        "SERVICESTATEID", "SERVICEATTEMPT", "SERVICEDURATIONSEC",
+        "LASTSERVICECHECK", "LASTSERVICESTATECHANGE")
+    for key in num_keys:
         if key in val and isinstance(val[key], str) and val[key].isdigit():
             val[key] = int(val[key])
 
@@ -225,7 +241,7 @@ def _op5_normalize_val(val):
 
 
 def build_op5_notification_varbinds(notification_type, val, sys_uptime_ticks=None):
-    """Build SNMPv2 trap varbinds for OP5/NAGIOS notification (sysUpTime, snmpTrapOID, then type-specific)."""
+    """Build SNMPv2 trap varbinds for OP5/NAGIOS (sysUpTime, snmpTrapOID, then type-specific)."""
     if sys_uptime_ticks is None:
         sys_uptime_ticks = int(__import__("time").time() * 100)
     spec = OP5_VARBIND_SPEC.get(notification_type)
@@ -234,7 +250,8 @@ def build_op5_notification_varbinds(notification_type, val, sys_uptime_ticks=Non
     suffixes = OP5_OID_SUFFIXES[notification_type]
     out = [
         ObjectType(ObjectIdentity(SYS_UPTIME_OID), TimeTicks(sys_uptime_ticks)),
-        ObjectType(ObjectIdentity(SNMP_TRAP_OID), ObjectIdentifier(ENTERPRISE_OID)),
+        ObjectType(
+            ObjectIdentity(SNMP_TRAP_OID), ObjectIdentifier(ENTERPRISE_OID)),
     ]
     for oid_key, val_key in spec:
         suffix = suffixes[oid_key]
@@ -278,8 +295,8 @@ def parse_var_bind(var_bind_str):
     except Exception as e:  # pylint: disable=broad-except
         raise ValueError(f"Invalid var-bind: {var_bind_str} - {str(e)}") from e
 
-async def send_trap(args):
-    """Asynchronous function to send SNMP trap"""
+async def send_trap(args):  # pylint: disable=too-many-locals,too-many-branches
+    """Asynchronous function to send SNMP trap."""
     # Version-specific configuration
     if args.version in ['1', '2c'] and not args.community:
         logging.error("Community string required for SNMPv1/v2c")
@@ -342,7 +359,7 @@ async def send_trap(args):
             notification = NotificationType(trap_oid).add_varbinds(*var_binds)
 
         # Send notification
-        error_indication, error_status, error_index, _ = await send_notification(
+        error_indication, _, _, _ = await send_notification(
             SnmpEngine(),
             user_data,
             transport,
@@ -361,7 +378,8 @@ async def send_trap(args):
         if args.debug:
             logging.exception("Full error trace:")
 
-def main():
+def main():  # pylint: disable=too-many-return-statements
+    """Parse arguments and send SNMP trap (v1/v2c/v3 or OP5 notification mode)."""
     parser = argparse.ArgumentParser(description='SNMP Trap Sender')
     parser.add_argument('--version', choices=['1', '2c', '3'], default='3',
                       help='SNMP version (default: 3)')
