@@ -1,14 +1,16 @@
 #!/usr/bin/python3
+# Pylint: pysnmp may be missing in lint env; wildcard brings in trap API names.
+# pyright: reportMissingImports=false, reportUndefinedVariable=false
+# pylint: disable=undefined-variable
 
 import re
 import argparse
 import asyncio
 import logging
-from pysnmp.hlapi.v3arch.asyncio import *
-from pysnmp.proto.rfc1902 import *
-from pysnmp import debug
-from pysnmp.smi import builder, view, compiler
-
+from pysnmp.hlapi.v3arch.asyncio import *  # pylint: disable=wildcard-import,import-error
+from pysnmp.proto.rfc1902 import Integer, ObjectIdentifier, OctetString  # pylint: disable=import-error
+from pysnmp import debug  # pylint: disable=import-error
+from pysnmp.smi import builder, view, compiler  # pylint: disable=import-error
 
 # Initialize MIB components globally
 mib_builder = builder.MibBuilder()
@@ -18,7 +20,7 @@ mib_view = view.MibViewController(mib_builder)
 # Load essential MIBs
 try:
     mib_builder.load_modules('SNMPv2-MIB')
-except Exception as e:
+except Exception:  # pylint: disable=broad-except
     pass  # Initialization will be finalized after logging setup
 
 # Helper function to check if OID is numerical
@@ -51,8 +53,8 @@ def setup_logging(debug_flag=False):
     # Re-attempt MIB loading with logging available
     try:
         mib_builder.load_modules('SNMPv2-MIB')
-    except Exception as e:
-        logger.warning(f"Failed to load MIB modules: {e}")
+    except Exception as e:  # pylint: disable=broad-except
+        logger.warning("Failed to load MIB modules: %s", e)
 
 
 def validate_resolved_oid(oid_identity, original_str):
@@ -65,7 +67,7 @@ def validate_resolved_oid(oid_identity, original_str):
         # Attempt to get string representation
         try:
             oid_str = str(oid_identity)
-        except Exception:
+        except Exception:  # pylint: disable=broad-except
             oid_str = None
         
         # Try resolution if needed
@@ -76,7 +78,7 @@ def validate_resolved_oid(oid_identity, original_str):
         if not is_numerical_oid(oid_str):
             raise ValueError(f"OID {original_str} resolves to non-numerical {oid_str}")
 
-    except Exception as e:
+    except Exception as e:  # pylint: disable=broad-except
         if not is_numerical_oid(original_str):
             raise ValueError(f"OID {original_str} could not be resolved to numerical form") from e
 
@@ -88,11 +90,11 @@ def resolve_oid(oid_str):
             obj_identity = ObjectIdentity(mib_name, symbol)
         else:
             obj_identity = ObjectIdentity(oid_str)
-        
+
         validate_resolved_oid(obj_identity, oid_str)
         return obj_identity
-    except Exception as e:
-        logging.error(f"Invalid OID format: {oid_str} - {str(e)}")
+    except Exception as e:  # pylint: disable=broad-except
+        logging.error("Invalid OID format: %s - %s", oid_str, e)
         raise
 
 def parse_var_bind(var_bind_str):
@@ -121,7 +123,7 @@ def parse_var_bind(var_bind_str):
 
         return ObjectType(obj_identity, converted_value)
 
-    except Exception as e:
+    except Exception as e:  # pylint: disable=broad-except
         raise ValueError(f"Invalid var-bind: {var_bind_str} - {str(e)}") from e
 
 async def send_trap(args):
@@ -144,9 +146,9 @@ async def send_trap(args):
         target_ip, _, target_port = args.target.partition(':')
         target_port = int(target_port) if target_port else 162
 
-        logging.debug(f"Target: {target_ip}:{target_port}")
+        logging.debug("Target: %s:%s", target_ip, target_port)
     except ValueError as e:
-        logging.error(f"Invalid target format: {e}")
+        logging.error("Invalid target format: %s", e)
         return
 
     var_binds = []
@@ -154,16 +156,16 @@ async def send_trap(args):
         try:
             var_bind = parse_var_bind(vb)
             var_binds.append(var_bind)
-            logging.debug(f"Added var-bind: {vb}")
+            logging.debug("Added var-bind: %s", vb)
         except ValueError as e:
-            logging.error(f"Error processing var-bind: {e}")
+            logging.error("Error processing var-bind: %s", e)
             return
 
     try:
         # Create transport target asynchronously
         transport = await UdpTransportTarget.create(target_ip, target_port)
         
-        error_indication, error_status, error_index, _ = await send_notification(
+        error_indication, error_status, _, _ = await send_notification(
             SnmpEngine(),
             UsmUserData(
                 args.user,
@@ -179,14 +181,14 @@ async def send_trap(args):
         )
 
         if error_indication:
-            logging.error(f"Trap failed to send: {error_indication}")
+            logging.error("Trap failed to send: %s", error_indication)
         elif error_status:
-            logging.error(f"Error in response: {error_status.prettyPrint()}")
+            logging.error("Error in response: %s", error_status.prettyPrint())
         else:
             logging.info("Trap successfully sent!")
 
-    except Exception as e:
-        logging.error(f"Error sending trap: {str(e)}")
+    except Exception as e:  # pylint: disable=broad-except
+        logging.error("Error sending trap: %s", e)
         if args.debug:
             logging.exception("Full error trace:")
 
