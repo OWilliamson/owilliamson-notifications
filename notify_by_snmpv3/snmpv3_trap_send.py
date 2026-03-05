@@ -1,4 +1,5 @@
 #!/usr/bin/python3
+"""Send SNMPv3 traps from the command line (pysnmp asyncio v3arch)."""
 # Pylint: pysnmp may be missing in lint env; wildcard brings in trap API names.
 # pyright: reportMissingImports=false, reportUndefinedVariable=false
 # pylint: disable=undefined-variable
@@ -25,6 +26,7 @@ except Exception:  # pylint: disable=broad-except
 
 # Helper function to check if OID is numerical
 def is_numerical_oid(oid_str):
+    """Return True if oid_str is a dotted-decimal OID (e.g. 1.3.6.1.4.1)."""
     return re.match(r'^[0-9.]+$', oid_str) is not None
 
 def setup_logging(debug_flag=False):
@@ -63,18 +65,18 @@ def validate_resolved_oid(oid_identity, original_str):
         # First check if original input is numerical
         if is_numerical_oid(original_str):
             return
-        
+
         # Attempt to get string representation
         try:
             oid_str = str(oid_identity)
         except Exception:  # pylint: disable=broad-except
             oid_str = None
-        
+
         # Try resolution if needed
         if not oid_str or not is_numerical_oid(oid_str):
             oid_identity.resolve_with_mib(mib_view)
             oid_str = str(oid_identity)
-            
+
         if not is_numerical_oid(oid_str):
             raise ValueError(f"OID {original_str} resolves to non-numerical {oid_str}")
 
@@ -164,7 +166,7 @@ async def send_trap(args):
     try:
         # Create transport target asynchronously
         transport = await UdpTransportTarget.create(target_ip, target_port)
-        
+
         error_indication, error_status, _, _ = await send_notification(
             SnmpEngine(),
             UsmUserData(
@@ -193,6 +195,7 @@ async def send_trap(args):
             logging.exception("Full error trace:")
 
 def main():
+    """Parse arguments and send one SNMPv3 trap."""
     parser = argparse.ArgumentParser(description='Send SNMPv3 trap with command-line parameters')
     parser.add_argument('--user', required=True, help='SNMPv3 username')
     parser.add_argument('--auth-key', required=True, help='Authentication key')
