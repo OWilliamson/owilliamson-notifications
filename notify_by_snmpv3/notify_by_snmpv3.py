@@ -4,9 +4,12 @@
 # pylint: disable=wildcard-import,undefined-variable,import-error,duplicate-code,protected-access
 
 import re
+import sys
 import argparse
 import asyncio
 import logging
+import time
+from ipaddress import ip_address
 from pysnmp.hlapi.v3arch.asyncio import *  # noqa: F403,F401  # pylint: disable=import-error
 from pysnmp.proto.rfc1902 import (  # pylint: disable=import-error
     Integer,
@@ -175,6 +178,22 @@ OP5_VARBIND_SPEC = {
 }
 
 
+def _op5_normalize_macro_names(val, notification_type):
+    """Map standard macro names to internal keys.
+    - $SERVICEDESC$ (standard) -> SERVICEDESCRIPTION (MIB name)
+    - $HOSTNOTIFICATIONNUMBER$ / $SERVICENOTIFICATIONNUMBER$ -> NOTIFICATIONNUMBER
+    """
+    if val.get("SERVICEDESC") is not None and val.get("SERVICEDESC") != "":
+        if val.get("SERVICEDESCRIPTION") is None or val.get("SERVICEDESCRIPTION") == "":
+            val["SERVICEDESCRIPTION"] = val["SERVICEDESC"]
+    if notification_type == "nHostNotify" and val.get("HOSTNOTIFICATIONNUMBER") is not None:
+        if val.get("NOTIFICATIONNUMBER") is None or val.get("NOTIFICATIONNUMBER") == "":
+            val["NOTIFICATIONNUMBER"] = val["HOSTNOTIFICATIONNUMBER"]
+    if notification_type == "nSvcNotify" and val.get("SERVICENOTIFICATIONNUMBER") is not None:
+        if val.get("NOTIFICATIONNUMBER") is None or val.get("NOTIFICATIONNUMBER") == "":
+            val["NOTIFICATIONNUMBER"] = val["SERVICENOTIFICATIONNUMBER"]
+
+
 def _op5_required_keys(notification_type):
     """Return required variable keys for the given notification type."""
     required = {
@@ -224,6 +243,7 @@ def _op5_normalize_val(val):
         val["NOTIFICATIONTYPE"] = 3
     elif val.get("NOTIFICATIONTYPE") == "FLAPPINGSTOP":
         val["NOTIFICATIONTYPE"] = 4
+    # Service-state strings sometimes used for NOTIFICATIONTYPE by OP5
     elif val.get("NOTIFICATIONTYPE") == "OK":
         val["NOTIFICATIONTYPE"] = 0
     elif val.get("NOTIFICATIONTYPE") == "WARNING":
@@ -243,7 +263,7 @@ def _op5_normalize_val(val):
 def build_op5_notification_varbinds(notification_type, val, sys_uptime_ticks=None):
     """Build SNMPv2 trap varbinds for OP5/NAGIOS (sysUpTime, snmpTrapOID, then type-specific)."""
     if sys_uptime_ticks is None:
-        sys_uptime_ticks = int(__import__("time").time() * 100)
+        sys_uptime_ticks = int(time.time() * 100)
     spec = OP5_VARBIND_SPEC.get(notification_type)
     if not spec:
         raise ValueError(f"Unknown notification type: {notification_type}")
@@ -286,6 +306,10 @@ def parse_var_bind(var_bind_str):
             oid_identity = resolve_oid(value)
             converted_value = ObjectIdentifier(str(oid_identity))
         elif data_type == 'ipaddress':
+            try:
+                ip_address(value)
+            except ValueError as ve:
+                raise ValueError(f"Invalid ipaddress value: {value}") from ve
             converted_value = IpAddress(value)
         else:
             raise ValueError(f"Unsupported data type: {data_type}")
@@ -296,15 +320,15 @@ def parse_var_bind(var_bind_str):
         raise ValueError(f"Invalid var-bind: {var_bind_str} - {str(e)}") from e
 
 async def send_trap(args):  # pylint: disable=too-many-locals,too-many-branches
-    """Asynchronous function to send SNMP trap."""
+    """Asynchronous function to send SNMP trap. Returns True on success, False on failure."""
     # Version-specific configuration
     if args.version in ['1', '2c'] and not args.community:
         logging.error("Community string required for SNMPv1/v2c")
-        return
+        return False
 
     if args.version == '3' and not all([args.user, args.auth_key, args.priv_key]):
         logging.error("SNMPv3 requires --user, --auth-key, and --priv-key")
-        return
+        return False
 
     # Protocol mappings
     auth_proto_map = {'SHA': USM_AUTH_HMAC96_SHA, 'MD5': USM_AUTH_HMAC96_MD5}
@@ -312,8 +336,12 @@ async def send_trap(args):  # pylint: disable=too-many-locals,too-many-branches
 
     try:
         # Create transport
-        target_ip, _, target_port = args.target.partition(':')
-        target_port = int(target_port) if target_port else 162
+        target_ip, _, target_port_str = args.target.partition(':')
+        try:
+            target_port = int(target_port_str) if target_port_str else 162
+        except ValueError:
+            logging.error("Invalid --target port: %r (must be numeric)", target_port_str)
+            return False
         transport = await UdpTransportTarget.create(target_ip, target_port)
 
         # Prepare security parameters
@@ -342,7 +370,7 @@ async def send_trap(args):  # pylint: disable=too-many-locals,too-many-branches
                     var_binds.append(parse_var_bind(vb))
                 except ValueError as e:
                     logging.error("Error processing var-bind: %s", e)
-                    return
+                    return False
             trap_oid = resolve_oid(args.trap_oid)
 
         # Build notification payload
@@ -370,73 +398,39 @@ async def send_trap(args):  # pylint: disable=too-many-locals,too-many-branches
 
         if error_indication:
             logging.error("Trap failed to send: %s", error_indication)
-        else:
-            logging.info("Trap successfully sent!")
+            return False
+        logging.info("Trap successfully sent!")
+        return True
 
     except Exception as e:  # pylint: disable=broad-except
-        logging.error("Error sending trap: %s", e)
+        logging.error("Error sending trap: %s: %s", type(e).__name__, e)
         if args.debug:
             logging.exception("Full error trace:")
+        return False
 
-def main():  # pylint: disable=too-many-return-statements
-    """Parse arguments and send SNMP trap (v1/v2c/v3 or OP5 notification mode)."""
-    parser = argparse.ArgumentParser(description='SNMP Trap Sender')
-    parser.add_argument('--version', choices=['1', '2c', '3'], default='3',
-                      help='SNMP version (default: 3)')
-
-    # SNMPv3 specific
-    parser.add_argument('--user', help='SNMPv3 username')
-    parser.add_argument('--auth-key', help='SNMPv3 authentication key')
-    parser.add_argument('--priv-key', help='SNMPv3 privacy key')
-    parser.add_argument('--auth-protocol', choices=['SHA', 'MD5'], default='SHA',
-                      help='Authentication protocol (v3 only)')
-    parser.add_argument('--priv-protocol', choices=['AES', 'DES'], default='AES',
-                      help='Privacy protocol (v3 only)')
-
-    # SNMPv1 specific
-    parser.add_argument('--enterprise-oid',
-                      help='Enterprise OID (required for SNMPv1)')
-    parser.add_argument('--agent-address',
-                      help='Agent IP address (required for SNMPv1)')
-    parser.add_argument('--generic-trap', type=int, choices=range(0, 7),
-                      help='Generic trap type 0-6 (required for SNMPv1)')
-    parser.add_argument('--specific-trap', type=int,
-                      help='Specific trap code (required for SNMPv1)')
-
-    # Common parameters
-    parser.add_argument('--community', help='SNMP community string (v1/v2c)')
-    parser.add_argument('--target', required=True,
-                      help='Target IP:port (e.g., 192.168.1.100:162)')
-    parser.add_argument('--trap-oid',
-                      help='Trap OID (required for v2c/v3)')
-    parser.add_argument('--var-bind', '-v', action='append',
-                      help='Variable binding in format "OID:type:value"')
-    parser.add_argument('--type', choices=['nHostEvent', 'nHostNotify', 'nSvcEvent', 'nSvcNotify'],
-                      help='OP5 notification type (builds NAGIOS-NOTIFY-MIB varbinds)')
-    parser.add_argument('--notification-var', '-V', action='append', metavar='KEY=VALUE',
-                      help='OP5 variable (e.g. HOSTNAME=host1). Use with --type.')
-    parser.add_argument('--debug', action='store_true', help='Enable debug logging')
-
-    args = parser.parse_args()
-
-    # OP5 mode: build val from --notification-var and set defaults
+def _build_op5_val(args):
+    """Build OP5 notification val dict from --notification-var and set args._op5_val, args._var_binds_from_op5.
+    Exits with 1 on validation error.
+    """
     if args.type:
         if not args.notification_var:
             logging.error("--type requires at least one --notification-var (KEY=VALUE)")
-            return
+            sys.exit(1)
         val = {}
         for nv in args.notification_var:
             if "=" not in nv:
                 logging.error("Invalid --notification-var: %r (expected KEY=VALUE)", nv)
-                return
+                sys.exit(1)
             k, v = nv.split("=", 1)
             val[k.strip()] = v.strip()
+        _op5_normalize_macro_names(val, args.type)
         _op5_set_defaults(args.type, val)
         required = _op5_required_keys(args.type)
         for r in required:
-            if not val.get(r):
+            v = val.get(r)
+            if v is None or v == "":
                 logging.error("--type %s requires: %s", args.type, ", ".join(required))
-                return
+                sys.exit(1)
         _op5_normalize_val(val)
         args._op5_val = val
         args._var_binds_from_op5 = True
@@ -445,26 +439,82 @@ def main():  # pylint: disable=too-many-return-statements
         args._var_binds_from_op5 = False
         if not args.var_bind:
             logging.error("Either --var-bind or --type with --notification-var is required")
-            return
+            sys.exit(1)
 
-    # Validate version-specific requirements
+
+def _validate_args(args):
+    """Validate version-specific and target/agent options. Exits with 1 on error."""
     if args.version == '1' and not all([args.enterprise_oid, args.agent_address,
-                                      args.generic_trap is not None,
-                                      args.specific_trap is not None]):
+                                        args.generic_trap is not None,
+                                        args.specific_trap is not None]):
         logging.error("SNMPv1 requires --enterprise-oid, --agent-address, "
-                    "--generic-trap, and --specific-trap")
-        return
+                      "--generic-trap, and --specific-trap")
+        sys.exit(1)
 
     if args.version in ['2c', '3'] and not args.trap_oid and not args._var_binds_from_op5:
         logging.error("SNMPv%s requires --trap-oid (or use --type for OP5)", args.version)
-        return
+        sys.exit(1)
 
     if args._var_binds_from_op5 and args.version != '3':
         logging.error("OP5 notification mode (--type) is only supported with SNMPv3")
-        return
+        sys.exit(1)
 
+    if args.version == '1':
+        try:
+            ip_address(args.agent_address)
+        except ValueError:
+            logging.error("Invalid --agent-address: %s (must be a valid IP address)", args.agent_address)
+            sys.exit(1)
+
+
+def main():
+    """Parse arguments and send SNMP trap (v1/v2c/v3 or OP5 notification mode)."""
+    parser = argparse.ArgumentParser(description='SNMP Trap Sender')
+    parser.add_argument('--version', choices=['1', '2c', '3'], default='3',
+                        help='SNMP version (default: 3)')
+
+    # SNMPv3 specific
+    parser.add_argument('--user', help='SNMPv3 username')
+    parser.add_argument('--auth-key', help='SNMPv3 authentication key')
+    parser.add_argument('--priv-key', help='SNMPv3 privacy key')
+    parser.add_argument('--auth-protocol', choices=['SHA', 'MD5'], default='SHA',
+                        help='Authentication protocol (v3 only)')
+    parser.add_argument('--priv-protocol', choices=['AES', 'DES'], default='AES',
+                        help='Privacy protocol (v3 only)')
+
+    # SNMPv1 specific
+    parser.add_argument('--enterprise-oid',
+                        help='Enterprise OID (required for SNMPv1)')
+    parser.add_argument('--agent-address',
+                        help='Agent IP address (required for SNMPv1)')
+    parser.add_argument('--generic-trap', type=int, choices=range(0, 7),
+                        help='Generic trap type 0-6 (required for SNMPv1)')
+    parser.add_argument('--specific-trap', type=int,
+                        help='Specific trap code (required for SNMPv1)')
+
+    # Common parameters
+    parser.add_argument('--community', help='SNMP community string (v1/v2c)')
+    parser.add_argument('--target', required=True,
+                        help='Target IP:port (e.g., 192.168.1.100:162)')
+    parser.add_argument('--trap-oid',
+                        help='Trap OID (required for v2c/v3)')
+    parser.add_argument('--var-bind', '-v', action='append',
+                        help='Variable binding in format "OID:type:value"')
+    parser.add_argument('--type', choices=['nHostEvent', 'nHostNotify', 'nSvcEvent', 'nSvcNotify'],
+                        help='OP5 notification type (builds NAGIOS-NOTIFY-MIB varbinds)')
+    parser.add_argument('--notification-var', '-V', action='append', metavar='KEY=VALUE',
+                        help='OP5 variable (e.g. HOSTNAME=$HOSTNAME$, SERVICEDESC=$SERVICEDESC$). '
+                             'Accepts macro names: SERVICEDESC, HOSTNOTIFICATIONNUMBER, '
+                             'SERVICENOTIFICATIONNUMBER. Use with --type.')
+    parser.add_argument('--debug', action='store_true', help='Enable debug logging')
+
+    args = parser.parse_args()
     setup_logging(args.debug)
-    asyncio.run(send_trap(args))
+    _build_op5_val(args)
+    _validate_args(args)
+    success = asyncio.run(send_trap(args))
+    if not success:
+        sys.exit(1)
 
 if __name__ == '__main__':
     main()
