@@ -26,6 +26,13 @@ wheels/
 .installed.cfg
 *.egg
 
+# Archive directories
+archive/
+
+# Testing directories
+testing/
+**/testing/cache/
+
 # Debug / runtime (from notify scripts)
 snmp_trap_debug.log
 *.log
