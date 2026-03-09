@@ -5,6 +5,7 @@
 
 import re
 import sys
+import socket
 import argparse
 import asyncio
 import logging
@@ -51,6 +52,24 @@ def is_hostname(host):
         pass
     # Hostname: letter then letters, digits, hyphens; optional dotted components
     return bool(re.match(r'^[a-zA-Z][-a-zA-Z0-9]*(\.[a-zA-Z][-a-zA-Z0-9]*)*$', host))
+
+
+def resolve_to_ipv4(host):
+    """Resolve host (hostname or IP) to an IPv4 address string. Raises OSError on failure."""
+    host = host.strip()
+    try:
+        ip_address(host)
+        return host
+    except ValueError:
+        pass
+    try:
+        # Prefer AF_INET to get IPv4 (SNMPv1 agent-address is IPv4)
+        addrinfos = socket.getaddrinfo(host, None, socket.AF_INET)
+        if addrinfos:
+            return addrinfos[0][4][0]
+    except socket.gaierror:
+        pass
+    raise OSError(f"Could not resolve hostname to IPv4: {host}")
 
 def setup_logging(debug_flag=False):
     """Configure logging to both console and file"""
@@ -521,7 +540,11 @@ def _validate_args(args):
             if args.enterprise_oid is None or args.enterprise_oid == "":
                 args.enterprise_oid = ENTERPRISE_OID
             if args.agent_address is None or args.agent_address == "":
-                args.agent_address = target_host
+                try:
+                    args.agent_address = resolve_to_ipv4(target_host)
+                except OSError as e:
+                    logging.error("SNMPv1 agent-address requires an IP; %s", e)
+                    sys.exit(1)
             if args.generic_trap is None:
                 args.generic_trap = 6
             if args.specific_trap is None:
