@@ -38,6 +38,20 @@ def is_numerical_oid(oid_str):
     """Return True if oid_str is a dotted-decimal OID (e.g. 1.3.6.1.4.1)."""
     return re.match(r'^[0-9.]+$', oid_str) is not None
 
+
+def is_hostname(host):
+    """Return True if host is a valid hostname or IPv4 address (match Perl validation)."""
+    if not host or not host.strip():
+        return False
+    host = host.strip()
+    try:
+        ip_address(host)
+        return True
+    except ValueError:
+        pass
+    # Hostname: letter then letters, digits, hyphens; optional dotted components
+    return bool(re.match(r'^[a-zA-Z][-a-zA-Z0-9]*(\.[a-zA-Z][-a-zA-Z0-9]*)*$', host))
+
 def setup_logging(debug_flag=False):
     """Configure logging to both console and file"""
     logger = logging.getLogger()
@@ -108,33 +122,40 @@ def resolve_oid(oid_str):
         logging.error("Invalid OID format: %s - %s", oid_str, e)
         raise
 
-# OP5 (ITRS OP5 Monitor) / NAGIOS-NOTIFY-MIB (numeric OIDs; no MIB files required)
-ENTERPRISE_OID = "1.3.6.1.4.1.20006.1"
+# OP5 (ITRS OP5 Monitor) / NAGIOS-NOTIFY-MIB (numeric OIDs; see NAGIOS-ROOT-MIB + NAGIOS-NOTIFY-MIB)
+# Base: nagios = { enterprises 20006 } = 1.3.6.1.4.1.20006; nagiosNotify = { nagios 1 } = 20006.1
+# Trap types (NOTIFICATION-TYPE): nHostEvent=5, nHostNotify=6, nSvcEvent=7, nSvcNotify=8 under nagiosNotify
+ENTERPRISE_OID = "1.3.6.1.4.1.20006.1"  # nagiosNotify (base for all suffixes below)
+OP5_TRAP_OID_SUFFIXES = {"nHostEvent": "1.5", "nHostNotify": "1.6", "nSvcEvent": "1.7", "nSvcNotify": "1.8"}
+OP5_DEFAULT_TEST_OID_SUFFIX = "1.1.1.2"  # nHostname under nagiosHostEventEntry
+# SNMPv2/v3 notification: first two varbinds are sysUpTime.0 and snmpTrapOID.0 (RFC 3416)
 SYS_UPTIME_OID = "1.3.6.1.2.1.1.3.0"
 SNMP_TRAP_OID = "1.3.6.1.6.3.1.1.4.1.0"
-# Table suffixes: 1.x = nHostEvent, 2.x = nHostNotify, 3.x = nSvcEvent, 4.x = nSvcNotify
+# Object suffixes under ENTERPRISE_OID: HostEventEntry=1.1.1, HostNotifyEntry=2.1, SvcEventEntry=3.1, SvcNotifyEntry=4.1
+# nSvcEvent/nSvcNotify OBJECTS use nHostname/nHostStateID (1.1.1.2, 1.1.1.4) then service objects (3.1.x)
 OP5_OID_SUFFIXES = {
     "nHostEvent": {
-        "nHostname": "1.1.2", "nHostStateID": "1.1.4", "nHostStateType": "1.1.5",
-        "nHostAttempt": "1.1.6", "nHostDurationSec": "1.1.7", "nHostGroupName": "1.1.8",
-        "nHostLastCheck": "1.1.9", "nHostLastChange": "1.1.10", "nHostOutput": "1.1.14",
+        "nHostname": "1.1.1.2", "nHostStateID": "1.1.1.4", "nHostStateType": "1.1.1.5",
+        "nHostAttempt": "1.1.1.6", "nHostDurationSec": "1.1.1.7", "nHostGroupName": "1.1.1.8",
+        "nHostLastCheck": "1.1.1.9", "nHostLastChange": "1.1.1.10", "nHostOutput": "1.1.1.14",
     },
     "nHostNotify": {
         "nHostNotifyType": "2.1.1", "nHostNotifyNum": "2.1.2", "nHostAckAuthor": "2.1.3",
-        "nHostAckComment": "2.1.4", "nHostname": "1.1.2", "nHostStateID": "1.1.4",
-        "nHostStateType": "1.1.5", "nHostAttempt": "1.1.6", "nHostDurationSec": "1.1.7",
-        "nHostGroupName": "1.1.8", "nHostLastCheck": "1.1.9", "nHostLastChange": "1.1.10",
-        "nHostOutput": "1.1.14",
+        "nHostAckComment": "2.1.4", "nHostname": "1.1.1.2", "nHostStateID": "1.1.1.4",
+        "nHostStateType": "1.1.1.5", "nHostAttempt": "1.1.1.6", "nHostDurationSec": "1.1.1.7",
+        "nHostGroupName": "1.1.1.8", "nHostLastCheck": "1.1.1.9", "nHostLastChange": "1.1.1.10",
+        "nHostOutput": "1.1.1.14",
     },
+    # nSvcEvent/nSvcNotify OBJECTS use nHostname, nHostStateID (host table 1.1.1.x) then service table (3.1.x)
     "nSvcEvent": {
-        "nSvcHostname": "3.1.2", "nSvcHostStateID": "3.1.4", "nSvcDesc": "3.1.6",
+        "nSvcHostname": "1.1.1.2", "nSvcHostStateID": "1.1.1.4", "nSvcDesc": "3.1.6",
         "nSvcStateID": "3.1.7", "nSvcAttempt": "3.1.8", "nSvcDurationSec": "3.1.9",
         "nSvcGroupName": "3.1.10", "nSvcLastCheck": "3.1.11", "nSvcLastChange": "3.1.12",
         "nSvcOutput": "3.1.17",
     },
     "nSvcNotify": {
         "nSvcNotifyType": "4.1.1", "nSvcNotifyNum": "4.1.2", "nSvcAckAuthor": "4.1.3",
-        "nSvcAckComment": "4.1.4", "nSvcHostname": "3.1.2", "nSvcHostStateID": "3.1.4",
+        "nSvcAckComment": "4.1.4", "nSvcHostname": "1.1.1.2", "nSvcHostStateID": "1.1.1.4",
         "nSvcDesc": "3.1.6", "nSvcStateID": "3.1.7", "nSvcAttempt": "3.1.8",
         "nSvcDurationSec": "3.1.9", "nSvcGroupName": "3.1.10", "nSvcLastCheck": "3.1.11",
         "nSvcLastChange": "3.1.12", "nSvcOutput": "3.1.17",
@@ -260,6 +281,14 @@ def _op5_normalize_val(val):
         val["HOSTSTATETYPE"] = 2
 
 
+def _op5_trap_oid(notification_type):
+    """Return trap OID for notification type (NAGIOS-NOTIFY-MIB NOTIFICATION-TYPE)."""
+    suffix = OP5_TRAP_OID_SUFFIXES.get(notification_type)
+    if not suffix:
+        raise ValueError(f"Unknown notification type: {notification_type}")
+    return ENTERPRISE_OID + "." + suffix
+
+
 def build_op5_notification_varbinds(notification_type, val, sys_uptime_ticks=None):
     """Build SNMPv2 trap varbinds for OP5/NAGIOS (sysUpTime, snmpTrapOID, then type-specific)."""
     if sys_uptime_ticks is None:
@@ -268,10 +297,10 @@ def build_op5_notification_varbinds(notification_type, val, sys_uptime_ticks=Non
     if not spec:
         raise ValueError(f"Unknown notification type: {notification_type}")
     suffixes = OP5_OID_SUFFIXES[notification_type]
+    trap_oid = _op5_trap_oid(notification_type)
     out = [
         ObjectType(ObjectIdentity(SYS_UPTIME_OID), TimeTicks(sys_uptime_ticks)),
-        ObjectType(
-            ObjectIdentity(SNMP_TRAP_OID), ObjectIdentifier(ENTERPRISE_OID)),
+        ObjectType(ObjectIdentity(SNMP_TRAP_OID), ObjectIdentifier(trap_oid)),
     ]
     for oid_key, val_key in spec:
         suffix = suffixes[oid_key]
@@ -282,6 +311,19 @@ def build_op5_notification_varbinds(notification_type, val, sys_uptime_ticks=Non
         else:
             out.append(ObjectType(ObjectIdentity(oid_str), OctetString(str(v))))
     return out
+
+
+def build_test_trap_varbinds(test_oid, test_value, sys_uptime_ticks=None):
+    """Build varbinds for a test trap: sysUpTime, snmpTrapOID, then (test_oid, test_value)."""
+    if sys_uptime_ticks is None:
+        sys_uptime_ticks = int(time.time() * 100)
+    trap_oid = ENTERPRISE_OID + ".1"  # nagiosNotify
+    out = [
+        ObjectType(ObjectIdentity(SYS_UPTIME_OID), TimeTicks(sys_uptime_ticks)),
+        ObjectType(ObjectIdentity(SNMP_TRAP_OID), ObjectIdentifier(trap_oid)),
+        ObjectType(ObjectIdentity(test_oid), OctetString(str(test_value))),
+    ]
+    return out, trap_oid
 
 
 def parse_var_bind(var_bind_str):
@@ -335,14 +377,19 @@ async def send_trap(args):  # pylint: disable=too-many-locals,too-many-branches
     priv_proto_map = {'AES': USM_PRIV_CFB128_AES, 'DES': USM_PRIV_CBC56_DES}
 
     try:
-        # Create transport
-        target_ip, _, target_port_str = args.target.partition(':')
-        try:
-            target_port = int(target_port_str) if target_port_str else 162
-        except ValueError:
-            logging.error("Invalid --target port: %r (must be numeric)", target_port_str)
-            return False
-        transport = await UdpTransportTarget.create(target_ip, target_port)
+        # Create transport (host from target, port from --port or target:port or default 162)
+        target_host, _, target_port_str = args.target.partition(':')
+        if getattr(args, 'port', None) is not None:
+            target_port = args.port
+        elif target_port_str:
+            try:
+                target_port = int(target_port_str)
+            except ValueError:
+                logging.error("Invalid port in --target: %r (must be numeric)", target_port_str)
+                return False
+        else:
+            target_port = 162
+        transport = await UdpTransportTarget.create(target_host, target_port)
 
         # Prepare security parameters
         if args.version == '3':
@@ -360,9 +407,13 @@ async def send_trap(args):  # pylint: disable=too-many-locals,too-many-branches
             )
 
         # Build variable bindings
-        if getattr(args, '_var_binds_from_op5', False):
+        if getattr(args, '_test_trap', False):
+            var_binds, trap_oid_str = build_test_trap_varbinds(
+                args._test_oid, args._test_trap_value)
+            trap_oid = resolve_oid(trap_oid_str)
+        elif getattr(args, '_var_binds_from_op5', False):
             var_binds = build_op5_notification_varbinds(args.type, args._op5_val)
-            trap_oid = resolve_oid(ENTERPRISE_OID)
+            trap_oid = resolve_oid(_op5_trap_oid(args.type))
         else:
             var_binds = []
             for vb in args.var_bind:
@@ -410,8 +461,23 @@ async def send_trap(args):  # pylint: disable=too-many-locals,too-many-branches
 
 def _build_op5_val(args):
     """Build OP5 notification val dict from --notification-var and set args._op5_val, args._var_binds_from_op5.
-    Exits with 1 on validation error.
+    Handle --testtrap / --testoid. Exits with 1 on validation error.
     """
+    if getattr(args, 'testtrap', None) is not None:
+        args._test_trap = True
+        args._test_trap_value = args.testtrap
+        args._test_oid = (
+            args.testoid
+            if getattr(args, 'testoid', None) not in (None, "")
+            else ENTERPRISE_OID + "." + OP5_DEFAULT_TEST_OID_SUFFIX
+        )
+        args._var_binds_from_op5 = False
+        args._op5_val = None
+        return
+    args._test_trap = False
+    args._test_oid = None
+    args._test_trap_value = None
+
     if args.type:
         if not args.notification_var:
             logging.error("--type requires at least one --notification-var (KEY=VALUE)")
@@ -438,33 +504,43 @@ def _build_op5_val(args):
         args._op5_val = None
         args._var_binds_from_op5 = False
         if not args.var_bind:
-            logging.error("Either --var-bind or --type with --notification-var is required")
+            logging.error("Either --var-bind, --type with --notification-var, or --testtrap is required")
             sys.exit(1)
 
 
 def _validate_args(args):
     """Validate version-specific and target/agent options. Exits with 1 on error."""
-    if args.version == '1' and not all([args.enterprise_oid, args.agent_address,
-                                        args.generic_trap is not None,
-                                        args.specific_trap is not None]):
-        logging.error("SNMPv1 requires --enterprise-oid, --agent-address, "
-                      "--generic-trap, and --specific-trap")
+    target_host = args.target.partition(':')[0].strip()
+    if not is_hostname(target_host):
+        logging.error("%s is not a valid hostname or IP address", target_host)
         sys.exit(1)
 
-    if args.version in ['2c', '3'] and not args.trap_oid and not args._var_binds_from_op5:
-        logging.error("SNMPv%s requires --trap-oid (or use --type for OP5)", args.version)
-        sys.exit(1)
-
-    if args._var_binds_from_op5 and args.version != '3':
-        logging.error("OP5 notification mode (--type) is only supported with SNMPv3")
-        sys.exit(1)
-
+    op5_or_test = args._var_binds_from_op5 or getattr(args, '_test_trap', False)
     if args.version == '1':
+        if op5_or_test:
+            if args.enterprise_oid is None or args.enterprise_oid == "":
+                args.enterprise_oid = ENTERPRISE_OID
+            if args.agent_address is None or args.agent_address == "":
+                args.agent_address = target_host
+            if args.generic_trap is None:
+                args.generic_trap = 6
+            if args.specific_trap is None:
+                args.specific_trap = 1
+        if not all([args.enterprise_oid, args.agent_address,
+                    args.generic_trap is not None,
+                    args.specific_trap is not None]):
+            logging.error("SNMPv1 requires --enterprise-oid, --agent-address, "
+                          "--generic-trap, and --specific-trap")
+            sys.exit(1)
         try:
             ip_address(args.agent_address)
         except ValueError:
             logging.error("Invalid --agent-address: %s (must be a valid IP address)", args.agent_address)
             sys.exit(1)
+
+    if args.version in ['2c', '3'] and not op5_or_test and not args.trap_oid:
+        logging.error("SNMPv%s requires --trap-oid (or use --type for OP5, or --testtrap)", args.version)
+        sys.exit(1)
 
 
 def main():
@@ -494,10 +570,16 @@ def main():
 
     # Common parameters
     parser.add_argument('--community', help='SNMP community string (v1/v2c)')
-    parser.add_argument('--target', required=True,
-                        help='Target IP:port (e.g., 192.168.1.100:162)')
+    parser.add_argument('--target', '--hostname', required=True,
+                        help='Target host or IP (optionally use with --port)')
+    parser.add_argument('--port', '-P', type=int, default=None,
+                        help='Target port (default: 162; overrides port in --target if both given)')
     parser.add_argument('--trap-oid',
-                        help='Trap OID (required for v2c/v3)')
+                        help='Trap OID (required for v2c/v3 when not using --type or --testtrap)')
+    parser.add_argument('--testtrap', '-T', metavar='VALUE',
+                        help='Send a test trap with the given string as the single varbind value')
+    parser.add_argument('--testoid', '-o', default=None,
+                        help='OID for test trap varbind (default: enterprise nHostname OID)')
     parser.add_argument('--var-bind', '-v', action='append',
                         help='Variable binding in format "OID:type:value"')
     parser.add_argument('--type', choices=['nHostEvent', 'nHostNotify', 'nSvcEvent', 'nSvcNotify'],
