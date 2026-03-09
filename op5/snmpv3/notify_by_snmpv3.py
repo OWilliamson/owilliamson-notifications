@@ -55,15 +55,17 @@ def is_hostname(host):
 
 
 def resolve_to_ipv4(host):
-    """Resolve host (hostname or IP) to an IPv4 address string. Raises OSError on failure."""
+    """Resolve host (hostname or IP) to an IPv4 address string. Raises OSError on failure.
+    SNMPv1 agent-address requires IPv4 only; IPv6 is rejected."""
     host = host.strip()
     try:
-        ip_address(host)
+        addr = ip_address(host)
+        if addr.version != 4:
+            raise OSError(f"SNMPv1 agent-address requires IPv4; got IPv6 address: {host}")
         return host
     except ValueError:
         pass
     try:
-        # Prefer AF_INET to get IPv4 (SNMPv1 agent-address is IPv4)
         addrinfos = socket.getaddrinfo(host, None, socket.AF_INET)
         if addrinfos:
             return addrinfos[0][4][0]
@@ -556,7 +558,10 @@ def _validate_args(args):
                           "--generic-trap, and --specific-trap")
             sys.exit(1)
         try:
-            ip_address(args.agent_address)
+            addr = ip_address(args.agent_address)
+            if addr.version != 4:
+                logging.error("Invalid --agent-address: %s (SNMPv1 requires IPv4 only)", args.agent_address)
+                sys.exit(1)
         except ValueError:
             logging.error("Invalid --agent-address: %s (must be a valid IP address)", args.agent_address)
             sys.exit(1)
